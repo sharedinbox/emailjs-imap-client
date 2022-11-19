@@ -845,7 +845,6 @@ export default class Imap {
   }
 
   _resetSocketTimeout (byteLength) {
-    console.log(`_resetSocketTimeout called. byteLength: ${byteLength}`);
     clearTimeout(this._socketTimeoutTimer)
     const timeout = this.timeoutSocketLowerBound + Math.floor((byteLength || 4096) * this.timeoutSocketMultiplier) // max packet size is 4096 bytes
     this._socketTimeoutTimer = setTimeout(() => this._onError(new Error(' Socket timed out! [STO_01]')), timeout)
