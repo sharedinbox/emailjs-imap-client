@@ -197,7 +197,23 @@ export default class Imap {
 
       this._disableCompression()
 
-      if (!this.socket || this.socket.readyState !== 'open') {
+      if (!this.socket) {
+        return tearDown()
+      }
+
+      if (this.socket.readyState !== 'open') {
+        // Socket exists but isn't in the 'open' state (mid-handshake, errored,
+        // or half-closed after a login-stage failure such as Gmail's "Too many
+        // simultaneous connections"). Previously we merely dropped the reference
+        // here, leaking the underlying TCP socket until GC / OS timeout -- which
+        // keeps counting against the server's per-account connection limit and
+        // can pin busy channels at the limit. Force the underlying socket closed
+        // first, then tear down.
+        try {
+          this.socket.close()
+        } catch (e) {
+          // underlying socket already gone
+        }
         return tearDown()
       }
 
