@@ -34,6 +34,18 @@ const BUFFER_STATE_DEFAULT = 'default'
 const TIMEOUT_ENTER_IDLE = 1000
 
 /**
+ * How long close() waits for the socket's close/error event before tearing down anyway.
+ *
+ * An 'open' socket normally emits one of those as soon as we call close(), but a
+ * half-open connection (peer vanished without FIN/RST) emits neither, and close()
+ * would then never settle. That matters well beyond close() itself: _onError()
+ * awaits close() before it re-surfaces the error to onerror, so a stuck close()
+ * swallows the error entirely and any caller awaiting connect() or a command hangs
+ * forever with no timeout left to save it.
+ */
+const TIMEOUT_SOCKET_CLOSE = 5000
+
+/**
  * Lower Bound for socket timeout to wait since the last data was written to a socket
  */
 const TIMEOUT_SOCKET_LOWER_BOUND = 10000
@@ -217,7 +229,15 @@ export default class Imap {
         return tearDown()
       }
 
-      this.socket.onclose = this.socket.onerror = tearDown // we don't really care about the error here
+      // Bound the wait: if the socket never reports closed (half-open connection),
+      // tear down anyway so this promise always settles. See TIMEOUT_SOCKET_CLOSE.
+      const closeTimer = setTimeout(tearDown, TIMEOUT_SOCKET_CLOSE)
+      const onSocketClosed = () => {
+        clearTimeout(closeTimer)
+        tearDown()
+      }
+
+      this.socket.onclose = this.socket.onerror = onSocketClosed // we don't really care about the error here
       this.socket.close()
     })
   }
