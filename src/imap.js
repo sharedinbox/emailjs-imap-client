@@ -46,6 +46,19 @@ const TIMEOUT_ENTER_IDLE = 1000
 const TIMEOUT_SOCKET_CLOSE = 5000
 
 /**
+ * How long logout() waits for the server to close the connection before forcing it.
+ *
+ * LOGOUT asks the *server* to hang up, so the only completion signal is the socket's
+ * close/error event. A server that never closes -- or a half-open connection that
+ * emits neither event -- leaves logout()'s promise pending forever, the same defect
+ * TIMEOUT_SOCKET_CLOSE was added to fix in close(). Callers reach logout() on the way
+ * out of a working session, so a stuck one strands whatever resource the caller still
+ * holds with no other timeout left to save it. Bound the wait and fall through to the
+ * forced close().
+ */
+const TIMEOUT_LOGOUT = 3000
+
+/**
  * Lower Bound for socket timeout to wait since the last data was written to a socket
  */
 const TIMEOUT_SOCKET_LOWER_BOUND = 10000
@@ -245,17 +258,41 @@ export default class Imap {
   /**
    * Send LOGOUT to the server.
    *
-   * Use is discouraged!
+   * Always settles: the server closing the connection, the socket erroring, a
+   * failure to even enqueue the command, and the server simply never hanging up
+   * all converge on the same forced close(). See TIMEOUT_LOGOUT.
    *
-   * @returns {Promise} Resolves when connection is closed by server.
+   * @returns {Promise} Resolves once the connection is closed, however that happened.
    */
   logout () {
     return new Promise((resolve, reject) => {
-      this.socket.onclose = this.socket.onerror = () => {
+      let settled = false
+
+      // close() is itself bounded (TIMEOUT_SOCKET_CLOSE) and is safe to call with a
+      // null socket, so routing every exit through it keeps teardown in one place.
+      const finish = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(logoutTimer)
         this.close('Client logging out').then(resolve).catch(reject)
       }
 
-      this.enqueueCommand('LOGOUT')
+      const logoutTimer = setTimeout(finish, TIMEOUT_LOGOUT)
+
+      if (!this.socket) {
+        return finish()
+      }
+
+      this.socket.onclose = this.socket.onerror = finish
+
+      try {
+        // A rejected command means no close/error event is coming for us to wait
+        // on, and an unhandled rejection here would surface as a process warning.
+        const sent = this.enqueueCommand('LOGOUT')
+        if (sent && typeof sent.catch === 'function') sent.catch(() => finish())
+      } catch (e) {
+        finish()
+      }
     })
   }
 
